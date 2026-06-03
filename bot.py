@@ -1,26 +1,25 @@
 import asyncio
-import os
-from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
+import logging
+from aiogram import Bot, Dispatcher
+from config import BOT_TOKEN
+from database import init_db
+from handlers import router
 
-BOT_TOKEN = os.getenv('BOT_TOKEN')
-
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher()
-
-@dp.message(Command("start"))
-async def start_cmd(message: types.Message):
-    await message.answer("✅ START получен! Бот работает.")
-
-@dp.message(Command("help"))
-async def help_cmd(message: types.Message):
-    await message.answer("✅ HELP получен!")
-
-@dp.message()
-async def echo(message: types.Message):
-    await message.answer(f"Вы написали: {message.text}")
+logging.basicConfig(level=logging.INFO)
 
 async def main():
+    # Инициализируем базу данных (создаёт таблицы, если их нет)
+    init_db()
+    
+    # Создаём бота и диспетчер
+    bot = Bot(token=BOT_TOKEN)
+    dp = Dispatcher()
+    
+    # Подключаем все обработчики команд (из handlers.py, включая игры)
+    dp.include_router(router)
+    
+    # Удаляем вебхук (на случай, если он был установлен) и запускаем long polling
+    await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
 if __name__ == '__main__':
