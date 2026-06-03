@@ -11,7 +11,7 @@ import utils
 
 router = Router()
 
-# ---------- Ожидающие действия ----------
+# ---------- Ожидающие действия для оплаты ----------
 pending_actions = {}
 
 async def extract_chat_id_from_message(message: types.Message) -> int | None:
@@ -57,7 +57,7 @@ async def on_bot_added(event: types.ChatMemberUpdated, bot: Bot):
         current_role = user[3] if user else 'Ньюген'
         if get_role_level(current_role) < get_role_level("Отец"):
             update_user_role(owner_id, "Отец")
-            await bot.send_message(owner_id, f"🏆 Вы назначены **Отцом** в чате `{chat_title}` как создатель.")
+            await bot.send_message(owner_id, f"🏆 Вы назначены **Отцом** в чате `{chat_title}`.")
     await bot.send_message(chat_id, "✅ Бот добавлен! Выдайте ему права администратора для работы модерации.")
 
 # ---------- Обработчик сообщений в группах (модерация) ----------
@@ -79,6 +79,7 @@ async def message_handler(message: types.Message, bot: Bot):
     create_user_if_not_exists(user_id, message.from_user.username, message.from_user.full_name)
     update_message_stats(user_id)
     
+    # Антифлуд (10 сообщений подряд за 10 секунд)
     now = datetime.now()
     tracker = consecutive_tracker.get(chat_id)
     if tracker is None or tracker['user_id'] != user_id:
@@ -99,6 +100,7 @@ async def message_handler(message: types.Message, bot: Bot):
             tracker['count'] = 1
             tracker['last_time'] = now
     
+    # Фильтр мата
     if message.text and is_forbidden(message.text):
         await message.delete()
         warn_count = add_warning(user_id, 0, f"Запрещённое слово: {message.text[:50]}")
@@ -111,6 +113,7 @@ async def message_handler(message: types.Message, bot: Bot):
             except: pass
         return
     
+    # Защита от ссылок
     if message.text and utils.contains_non_whitelisted_link(message.text):
         await message.delete()
         until = datetime.now() + timedelta(hours=1)
@@ -118,6 +121,7 @@ async def message_handler(message: types.Message, bot: Bot):
         await message.answer(f"🔗 {message.from_user.full_name} мут 1 час за ссылку.")
         return
     
+    # Запоминание слов и сбор медиа
     if message.text:
         words = re.findall(r'\b\w+\b', message.text.lower())
         for w in words:
@@ -129,7 +133,7 @@ async def message_handler(message: types.Message, bot: Bot):
     elif message.animation:
         add_meme_media(message.animation.file_id, 'gif')
 
-# ---------- Reply-кнопки в личке ----------
+# ---------- Reply-кнопки в личных сообщениях ----------
 @router.message(F.chat.type == 'private', F.text == "🛒 Магазин")
 async def reply_shop(message: types.Message):
     await message.answer("🛒 Выберите услугу:", reply_markup=shop_menu())
@@ -155,7 +159,7 @@ async def private_text_handler(message: types.Message):
         return
     await message.answer("🤖 Пропиши /help для списка команд.")
 
-# ---------- Обработка пересланных сообщений для услуг ----------
+# ---------- Обработка пересланных сообщений для снятия мута/варна ----------
 @router.message(F.chat.type == 'private', F.forward_from_chat | F.text)
 async def handle_pending_action(message: types.Message):
     user_id = message.from_user.id
@@ -186,8 +190,8 @@ async def handle_pending_action(message: types.Message):
             await message.answer("⚠️ У вас нет предупреждений.")
     del pending_actions[user_id]
 
-# ---------- Команды (англ + рус) ----------
-@router.message(Command(commands=["start"]))
+# ---------- Команды (работают везде) ----------
+@router.message(Command("start"))
 async def cmd_start(message: types.Message):
     if message.chat.type == 'private':
         await message.answer(
@@ -200,7 +204,7 @@ async def cmd_start(message: types.Message):
 @router.message(Command(commands=["help", "помощь", "команды"]))
 async def cmd_help(message: types.Message):
     text = (
-        "📚 **Команды:**\n\n"
+        "📚 **Доступные команды:**\n\n"
         "💰 `/balance` `/мойдум` – баланс\n"
         "📊 `/top` `/топ` – топ активности\n"
         "🛒 `/shop` `/магазин` – магазин\n"
@@ -250,6 +254,7 @@ async def cmd_balance(message: types.Message):
     coins = get_coins(message.from_user.id)
     await message.answer(f"💰 Ваш баланс: {coins} Дум.")
 
+# ---------- Админские команды для баланса ----------
 @router.message(Command(commands=["addcoins", "начислитьдумы"]))
 async def cmd_addcoins(message: types.Message, bot: Bot):
     user_id = message.from_user.id
@@ -362,7 +367,7 @@ async def cmd_meme(message: types.Message, bot: Bot):
     else:
         await message.reply(word or "Нет материалов. Пишите слова и кидайте картинки!")
 
-# ---------- Модерационные команды (только группы) ----------
+# ---------- Модерационные команды (только в группах) ----------
 def group_only(func):
     async def wrapper(message: types.Message, *args, **kwargs):
         if message.chat.type == 'private':
@@ -507,8 +512,8 @@ async def cmd_warns(message: types.Message):
         await message.reply("❌ Использование: `/warns @username`")
         return
     target = args[1].lstrip('@')
-    # Для упрощения: нужно найти user_id, но в группе это сложно. Оставим заглушку.
-    await message.reply("ℹ️ Команда временно недоступна. Используйте `/warn` для выдачи.")
+    # Временно недоступно – показываем заглушку
+    await message.reply("ℹ️ Команда временно недоступна. Используйте `/warn`.")
 
 @router.message(Command(commands=["promote", "повысить"]))
 @group_only
