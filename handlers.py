@@ -56,7 +56,7 @@ def can_punish(moderator_id: int, target_id: int) -> bool:
     return get_role_level(mod_user[3]) > get_role_level(tgt_user[3])
 
 # ---------- Обработчик добавления бота в чат: назначаем владельца чата Отцом ----------
-async def get_chat_owner(bot: Bot, chat_id: int) -> Optional[int]:
+async def get_chat_owner(bot: Bot, chat_id: int) -> int | None:
     try:
         admins = await bot.get_chat_administrators(chat_id)
         for admin in admins:
@@ -150,9 +150,28 @@ async def message_handler(message: types.Message, bot: Bot):
     elif message.animation:
         add_meme_media(message.animation.file_id, 'gif')
 
-# ---------- AI ответ в личке ----------
+# ---------- Обработчики Reply-кнопок (только в личных сообщениях) ----------
+# Эти обработчики должны быть ПЕРЕД AI-обработчиком, чтобы перехватывать нажатия
+@router.message(F.chat.type == 'private', F.text == "🛒 Магазин")
+async def reply_shop(message: types.Message):
+    await message.answer("🛒 Выберите услугу:", reply_markup=shop_menu())
+
+@router.message(F.chat.type == 'private', F.text == "➕ Добавить в чат")
+async def reply_add_to_chat(message: types.Message):
+    bot_username = (await message.bot.get_me()).username
+    url = f"https://t.me/{bot_username}?startgroup=start"
+    await message.answer(f"Добавьте меня в чат по ссылке: {url}")
+
+@router.message(F.chat.type == 'private', F.text == "❓ Поддержка")
+async def reply_support(message: types.Message):
+    await message.answer(f"Связь с поддержкой: {SUPPORT_LINK}")
+
+# ---------- AI ответ в личке на любые другие сообщения (не команды и не кнопки) ----------
 @router.message(F.chat.type == 'private', F.text, ~F.text.startswith('/'))
 async def private_ai_handler(message: types.Message):
+    # Если сообщение совпадает с текстом кнопок, не обрабатываем (хотя они уже отловлены выше, но на всякий случай)
+    if message.text in ("🛒 Магазин", "➕ Добавить в чат", "❓ Поддержка"):
+        return
     user_msg = message.text
     await message.bot.send_chat_action(chat_id=message.chat.id, action="typing")
     ai_response = await get_ai_response(message.from_user.id, user_msg)
@@ -495,7 +514,6 @@ async def cmd_warns(message: types.Message):
         await message.reply("❌ Использование: `/warns @username`", parse_mode="Markdown")
         return
     target_username = args[1].lstrip('@')
-    # Для упрощения, можно получить user_id по username из базы. Оставим заглушку.
     await message.reply("ℹ️ Команда временно недоступна. Используйте `/warn` для выдачи предупреждений.")
 
 @router.message(Command(commands=["promote", "повысить"]))
@@ -592,21 +610,6 @@ async def cmd_statsbot(message: types.Message, bot: Bot):
     if message.chat.type != 'private':
         await message.reply("✅ Статистика отправлена в личку.")
 
-# ---------- Обработчики Reply-кнопок ----------
-@router.message(F.text == "🛒 Магазин")
-async def reply_shop(message: types.Message):
-    await message.answer("🛒 Выберите услугу:", reply_markup=shop_menu())
-
-@router.message(F.text == "➕ Добавить в чат")
-async def reply_add_to_chat(message: types.Message):
-    bot_username = (await message.bot.get_me()).username
-    url = f"https://t.me/{bot_username}?startgroup=start"
-    await message.answer(f"Добавьте меня в чат по ссылке: {url}")
-
-@router.message(F.text == "❓ Поддержка")
-async def reply_support(message: types.Message):
-    await message.answer(f"Связь с поддержкой: {SUPPORT_LINK}")
-
 # ---------- Обработчики покупок (callback) ----------
 @router.callback_query(F.data == "buy_unmute")
 async def buy_unmute(callback: types.CallbackQuery):
@@ -661,7 +664,6 @@ async def buy_learn_word(callback: types.CallbackQuery):
     cost = 10
     if remove_coins(user_id, cost):
         await callback.message.answer("✍️ Отправьте слово, которое хотите добавить в память бота.")
-        # Здесь лучше использовать FSM, но для простоты оставим так.
     else:
         await callback.message.answer(f"❌ Недостаточно Дум. Нужно {cost}, у вас {get_coins(user_id)}.")
     await callback.answer()
