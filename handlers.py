@@ -167,16 +167,16 @@ async def handle_pending_action(message: types.Message):
     action_data = pending_actions[user_id]
     chat_id = await extract_chat_id_from_message(message)
     if not chat_id:
-        await message.answer("❌ Не удалось определить чат.")
+        await message.answer("❌ Не удалось определить чат. Перешлите сообщение из нужного чата.")
         return
     if action_data['action'] == 'unmute':
         try:
             chat_member = await message.bot.get_chat_member(chat_id, user_id)
             if chat_member.status in ('left', 'kicked'):
-                await message.answer("❌ Вы не участник этого чата.")
+                await message.answer("❌ Вы не участник этого чата или забанены.")
                 return
         except Exception as e:
-            await message.answer(f"❌ Ошибка: {e}")
+            await message.answer(f"❌ Ошибка: {e}. Убедитесь, что бот добавлен в чат и есть права.")
             return
         unmute_user_in_chat(user_id, chat_id, user_id)
         await message.answer(f"✅ Мут снят в чате ID `{chat_id}`. Списано {action_data['cost']} Дум.")
@@ -209,7 +209,8 @@ async def cmd_help(message: types.Message):
         "🛒 `/shop` `/магазин` – магазин\n"
         "📈 `/stats` `/стата` – моя статистика\n"
         "🎲 `/doom` `/mem` `/rofl` `/мем` – мем\n"
-        "🎮 `/duel` `/basketball` `/dice` – игры\n\n"
+        "🎮 `/duel` `/basketball` `/dice` – игры\n"
+        "📊 `/game_stats` – статистика игр\n\n"
         "**Модерация (только в группах):**\n"
         "`/mute` `/мут` – мут\n"
         "`/unmute` `/размут` – снять мут\n"
@@ -252,7 +253,7 @@ async def cmd_balance(message: types.Message):
     coins = get_coins(message.from_user.id)
     await message.answer(f"💰 Ваш баланс: {coins} Дум.")
 
-# ---------- Админские команды ----------
+# ---------- Админские команды для баланса ----------
 @router.message(Command(commands=["addcoins", "начислитьдумы"]))
 async def cmd_addcoins(message: types.Message, bot: Bot):
     user_id = message.from_user.id
@@ -285,6 +286,57 @@ async def cmd_addcoins(message: types.Message, bot: Bot):
         except:
             await message.reply("❌ Пользователь не найден.")
 
+@router.message(Command(commands=["removecoins", "отнятьдумы"]))
+async def cmd_removecoins(message: types.Message, bot: Bot):
+    user_id = message.from_user.id
+    if user_id not in ADMIN_IDS and get_role_level(get_user(user_id)[3]) < get_role_level("Отец"):
+        await message.reply("⛔ Нет прав.")
+        return
+    args = message.text.split(maxsplit=2)
+    if len(args) < 3:
+        await message.reply("❌ Использование: `/removecoins @username количество`")
+        return
+    target = args[1].lstrip('@')
+    try:
+        amount = int(args[2])
+    except:
+        await message.reply("❌ Количество должно быть числом.")
+        return
+    try:
+        member = await bot.get_chat_member(message.chat.id, target)
+        target_id = member.user.id
+        current = get_coins(target_id)
+        if current < amount:
+            await message.reply(f"❌ У пользователя только {current} Дум.")
+            return
+        remove_coins(target_id, amount)
+        await message.reply(f"✅ У @{target} отнято {amount} Дум.")
+    except:
+        await message.reply("❌ Пользователь не найден.")
+
+@router.message(Command(commands=["setcoins", "установитьдумы"]))
+async def cmd_setcoins(message: types.Message, bot: Bot):
+    user_id = message.from_user.id
+    if user_id not in ADMIN_IDS and get_role_level(get_user(user_id)[3]) < get_role_level("Отец"):
+        await message.reply("⛔ Нет прав.")
+        return
+    args = message.text.split(maxsplit=2)
+    if len(args) < 3:
+        await message.reply("❌ Использование: `/setcoins @username количество`")
+        return
+    target = args[1].lstrip('@')
+    try:
+        amount = int(args[2])
+    except:
+        await message.reply("❌ Количество должно быть числом.")
+        return
+    try:
+        member = await bot.get_chat_member(message.chat.id, target)
+        set_coins(member.user.id, amount)
+        await message.reply(f"✅ Баланс @{target} установлен на {amount} Дум.")
+    except:
+        await message.reply("❌ Пользователь не найден.")
+
 # ---------- Мемы ----------
 @router.message(Command(commands=["doom", "mem", "rofl", "мем"]))
 async def cmd_meme(message: types.Message, bot: Bot):
@@ -314,7 +366,7 @@ async def cmd_meme(message: types.Message, bot: Bot):
     else:
         await message.reply(word or "Нет материалов. Пишите слова и кидайте картинки!")
 
-# ---------- Модерационные команды (только группы) ----------
+# ---------- Модерационные команды (только в группах) ----------
 def group_only(func):
     async def wrapper(message: types.Message, *args, **kwargs):
         if message.chat.type == 'private':
@@ -343,17 +395,20 @@ async def cmd_mute(message: types.Message, bot: Bot):
         await message.reply("❌ Пользователь не найден.")
         return
     if not can_punish(message.from_user.id, target_id):
-        await message.reply("❌ Нельзя наказать.")
+        await message.reply("❌ Нельзя наказать этого пользователя.")
         return
     m = re.match(r'(\d+)([mh])', dur)
     if not m:
-        await message.reply("❌ Формат: 10m, 1h, 24h")
+        await message.reply("❌ Формат времени: 10m, 1h, 24h")
         return
     val, unit = m.groups()
     delta = timedelta(minutes=int(val)) if unit == 'm' else timedelta(hours=int(val))
     until = datetime.now() + delta
     mute_user_in_chat(target_id, message.chat.id, until, message.from_user.id, reason)
     await message.reply(f"✅ @{target} замьючен до {until.strftime('%H:%M %d.%m')}. Причина: {reason or 'не указана'}")
+    try:
+        await bot.send_message(target_id, f"⚠️ Вы получили мут в чате {message.chat.title} до {until.strftime('%H:%M %d.%m')}. Причина: {reason or 'не указана'}")
+    except: pass
 
 @router.message(Command(commands=["unmute", "размут"]))
 @group_only
@@ -375,10 +430,13 @@ async def cmd_unmute(message: types.Message, bot: Bot):
     mod_level = get_role_level(get_user(message.from_user.id)[3])
     tgt_level = get_role_level(get_user(target_id)[3])
     if mod_level < tgt_level:
-        await message.reply("❌ Нельзя снять мут.")
+        await message.reply("❌ Нельзя снять мут с пользователя с более высокой ролью.")
         return
     unmute_user_in_chat(target_id, message.chat.id, message.from_user.id)
-    await message.reply(f"✅ Мут снят с @{target}.")
+    await message.reply(f"✅ Мут снят с @{target} в этом чате.")
+    try:
+        await bot.send_message(target_id, f"✅ С вас снят мут в чате {message.chat.title}.")
+    except: pass
 
 @router.message(Command(commands=["ban", "бан"]))
 @group_only
@@ -399,12 +457,15 @@ async def cmd_ban(message: types.Message, bot: Bot):
         await message.reply("❌ Пользователь не найден.")
         return
     if not can_punish(message.from_user.id, target_id):
-        await message.reply("❌ Нельзя забанить.")
+        await message.reply("❌ Нельзя забанить этого пользователя.")
         return
     try:
         await bot.ban_chat_member(message.chat.id, target_id)
         ban_user(target_id, message.from_user.id, reason)
         await message.reply(f"🔨 @{target} забанен. Причина: {reason or 'не указана'}")
+        try:
+            await bot.send_message(target_id, f"⚠️ Вы забанены в чате {message.chat.title}. Причина: {reason or 'не указана'}")
+        except: pass
     except Exception as e:
         await message.reply(f"❌ Ошибка: {e}")
 
@@ -430,14 +491,14 @@ async def cmd_warn(message: types.Message, bot: Bot):
         await message.reply("❌ Нельзя выдать предупреждение.")
         return
     count = add_warning(target_id, message.from_user.id, reason)
-    await message.reply(f"⚠️ @{target} предупреждение {count}/3. Причина: {reason or 'не указана'}")
+    await message.reply(f"⚠️ @{target} получил предупреждение ({count}/3). Причина: {reason or 'не указана'}")
     if count >= 3:
         try:
             await bot.ban_chat_member(message.chat.id, target_id)
             ban_user(target_id, message.from_user.id, "3 предупреждения")
-            await message.reply(f"🔨 @{target} забанен за 3 предупреждения.")
+            await message.reply(f"🔨 @{target} забанен автоматически (3 предупреждения).")
         except Exception as e:
-            await message.reply(f"❌ Ошибка: {e}")
+            await message.reply(f"❌ Ошибка при бане: {e}")
 
 @router.message(Command(commands=["promote", "повысить"]))
 @group_only
@@ -447,7 +508,7 @@ async def cmd_promote(message: types.Message, bot: Bot):
         return
     args = message.text.split(maxsplit=2)
     if len(args) < 2:
-        await message.reply("❌ Использование: `/promote @username [роль]`")
+        await message.reply("❌ Использование: `/promote @username [роль]`\nРоли: Ньюген, Фанат, Братик, Отчим, Отец")
         return
     target = args[1].lstrip('@')
     new_role = args[2] if len(args) > 2 else None
@@ -468,17 +529,17 @@ async def cmd_promote(message: types.Message, bot: Bot):
             return
         if get_role_level(new_role) > get_role_level(current_role):
             update_user_role(target_id, new_role)
-            await message.reply(f"✅ @{target} повышен до {new_role}.")
+            await message.reply(f"✅ Пользователь @{target} повышен до роли {new_role}.")
         else:
             await message.reply("❌ Новая роль должна быть выше текущей.")
     else:
         current_level = get_role_level(current_role)
         if current_level >= len(ROLE_HIERARCHY)-1:
-            await message.reply("❌ Уже высшая роль.")
+            await message.reply("❌ Пользователь уже имеет высшую роль.")
             return
         next_role = ROLE_HIERARCHY[current_level + 1]
         update_user_role(target_id, next_role)
-        await message.reply(f"✅ @{target} повышен до {next_role}.")
+        await message.reply(f"✅ Пользователь @{target} повышен до роли {next_role}.")
 
 @router.message(Command(commands=["demote", "понизить"]))
 @group_only
@@ -504,11 +565,11 @@ async def cmd_demote(message: types.Message, bot: Bot):
     current_role = user_data[3]
     current_level = get_role_level(current_role)
     if current_level <= 0:
-        await message.reply("❌ Нельзя понизить ниже Ньюген.")
+        await message.reply("❌ Нельзя понизить пользователя ниже роли Ньюген.")
         return
     prev_role = ROLE_HIERARCHY[current_level - 1]
     update_user_role(target_id, prev_role)
-    await message.reply(f"✅ @{target} понижен до {prev_role}.")
+    await message.reply(f"✅ Пользователь @{target} понижен до роли {prev_role}.")
 
 # ---------- Callback'и магазина ----------
 @router.callback_query(F.data == "buy_unmute")
@@ -539,7 +600,7 @@ async def buy_temp_fanat(callback: types.CallbackQuery):
     cost = 50
     if remove_coins(user_id, cost):
         update_user_role(user_id, 'Фанат', datetime.now() + timedelta(hours=24))
-        await callback.message.answer(f"✅ Роль 'Фанат' на 24 часа! Списано {cost} Дум.")
+        await callback.message.answer(f"✅ Роль 'Фанат' выдана на 24 часа! Списано {cost} Дум.")
     else:
         await callback.message.answer(f"❌ Недостаточно Дум. Нужно {cost}, у вас {get_coins(user_id)}.")
     await callback.answer()
@@ -550,7 +611,17 @@ async def buy_unlimited_memes(callback: types.CallbackQuery):
     cost = 250
     if remove_coins(user_id, cost):
         set_unlimited_memes(user_id, datetime.now() + timedelta(days=30))
-        await callback.message.answer(f"✅ Безлимит мемов на месяц! Списано {cost} Дум.")
+        await callback.message.answer(f"✅ Безлимит мемов активирован на месяц! Списано {cost} Дум.")
+    else:
+        await callback.message.answer(f"❌ Недостаточно Дум. Нужно {cost}, у вас {get_coins(user_id)}.")
+    await callback.answer()
+
+@router.callback_query(F.data == "buy_learn_word")
+async def buy_learn_word(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    cost = 10
+    if remove_coins(user_id, cost):
+        await callback.message.answer("✍️ Отправьте слово, которое хотите добавить в память бота.")
     else:
         await callback.message.answer(f"❌ Недостаточно Дум. Нужно {cost}, у вас {get_coins(user_id)}.")
     await callback.answer()
