@@ -9,41 +9,8 @@ from database import *
 from config import ADMIN_IDS, SUPPORT_LINK
 from keyboards import main_reply_keyboard, shop_menu
 import utils
-import g4f
-from g4f.client import Client
 
 router = Router()
-
-# ---------- AI клиент и история ----------
-g4f_client = Client()
-user_histories = {}
-
-def trim_history(history, max_length=3000):
-    total_len = sum(len(msg["content"]) for msg in history)
-    while history and total_len > max_length:
-        removed = history.pop(0)
-        total_len -= len(removed["content"])
-    return history
-
-async def get_ai_response(user_id: int, user_message: str) -> str:
-    if user_id not in user_histories:
-        user_histories[user_id] = []
-    history = user_histories[user_id]
-    history.append({"role": "user", "content": user_message})
-    history = trim_history(history)
-    try:
-        response = await g4f_client.chat.completions.acreate(
-            model="gpt-3.5-turbo",
-            messages=history,
-            timeout=30
-        )
-        ai_reply = response.choices[0].message.content
-        history.append({"role": "assistant", "content": ai_reply})
-        user_histories[user_id] = trim_history(history)
-        return ai_reply
-    except Exception as e:
-        print(f"AI Error: {e}")
-        return "Извините, произошла ошибка при генерации ответа. Попробуйте позже."
 
 # ---------- Вспомогательная проверка прав на наказание ----------
 def can_punish(moderator_id: int, target_id: int) -> bool:
@@ -151,7 +118,6 @@ async def message_handler(message: types.Message, bot: Bot):
         add_meme_media(message.animation.file_id, 'gif')
 
 # ---------- Обработчики Reply-кнопок (только в личных сообщениях) ----------
-# Эти обработчики должны быть ПЕРЕД AI-обработчиком, чтобы перехватывать нажатия
 @router.message(F.chat.type == 'private', F.text == "🛒 Магазин")
 async def reply_shop(message: types.Message):
     await message.answer("🛒 Выберите услугу:", reply_markup=shop_menu())
@@ -166,17 +132,13 @@ async def reply_add_to_chat(message: types.Message):
 async def reply_support(message: types.Message):
     await message.answer(f"Связь с поддержкой: {SUPPORT_LINK}")
 
-# ---------- AI ответ в личке на любые другие сообщения (не команды и не кнопки) ----------
+# ---------- Обработчик обычных сообщений в личке (без AI) ----------
 @router.message(F.chat.type == 'private', F.text, ~F.text.startswith('/'))
-async def private_ai_handler(message: types.Message):
-    # Если сообщение совпадает с текстом кнопок, не обрабатываем (хотя они уже отловлены выше, но на всякий случай)
+async def private_text_handler(message: types.Message):
+    # Игнорируем текст кнопок (на случай, если не сработал фильтр)
     if message.text in ("🛒 Магазин", "➕ Добавить в чат", "❓ Поддержка"):
         return
-    user_msg = message.text
-    await message.bot.send_chat_action(chat_id=message.chat.id, action="typing")
-    ai_response = await get_ai_response(message.from_user.id, user_msg)
-    response_text = f"{ai_response}\n\n🤖 Пропиши /help, чтобы узнать, что я умею."
-    await message.answer(response_text)
+    await message.answer("🤖 Пропиши /help, чтобы узнать, что я умею.")
 
 # ---------- Команды, работающие везде ----------
 @router.message(Command("start"))
@@ -195,8 +157,7 @@ async def cmd_help(message: types.Message):
     help_text = (
         "📚 **Доступные команды:**\n\n"
         "💰 `/balance` или `/myduom` – проверить баланс (Думы)\n"
-        "🤖 **Общение:** напишите любое сообщение в личку – я отвечу\n"
-        "🗑️ `/clear` – очистить историю диалога\n"
+        "🗑️ `/clear` – очистить историю диалога (только для AI, сейчас не используется)\n"
         "📊 `/top` – топ активных пользователей\n"
         "🛒 `/shop` – магазин услуг\n"
         "📈 `/stats` – ваша статистика\n"
@@ -210,10 +171,7 @@ async def cmd_help(message: types.Message):
 
 @router.message(Command(commands=["clear", "очистить"]))
 async def cmd_clear(message: types.Message):
-    user_id = message.from_user.id
-    if user_id in user_histories:
-        del user_histories[user_id]
-    await message.answer("✅ История диалога очищена!")
+    await message.answer("✅ Очистка истории не требуется (AI отключён).")
 
 @router.message(Command(commands=["top", "топ"]))
 async def cmd_top(message: types.Message):
