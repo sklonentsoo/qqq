@@ -12,6 +12,24 @@ import utils
 
 router = Router()
 
+# ---------- Ожидающие действия для оплаты (словарь) ----------
+pending_actions = {}
+
+# ---------- Вспомогательная функция извлечения chat_id ----------
+async def extract_chat_id_from_message(message: types.Message) -> int | None:
+    """Извлекает chat_id из пересланного сообщения или из текстовой ссылки"""
+    if message.forward_from_chat:
+        return message.forward_from_chat.id
+    if message.text:
+        # Попытка извлечь ID из ссылки вида https://t.me/c/123456789/...
+        match = re.search(r'https://t\.me/c/(\d+)', message.text)
+        if match:
+            return -100 + int(match.group(1))  # для супергрупп
+        # Если просто число
+        if message.text.lstrip('-').isdigit():
+            return int(message.text)
+    return None
+
 # ---------- Вспомогательная проверка прав на наказание ----------
 def can_punish(moderator_id: int, target_id: int) -> bool:
     if moderator_id == target_id:
@@ -128,6 +146,12 @@ async def reply_add_to_chat(message: types.Message):
     url = f"https://t.me/{bot_username}?startgroup=start"
     await message.answer(f"Добавьте меня в чат по ссылке: {url}")
 
+@router.message(F.chat.type == 'private', F.text == "💰 Баланс")
+async def reply_balance(message: types.Message):
+    user_id = message.from_user.id
+    coins = get_coins(user_id)
+    await message.answer(f"💰 Ваш баланс: {coins} Дум.")
+
 @router.message(F.chat.type == 'private', F.text == "❓ Поддержка")
 async def reply_support(message: types.Message):
     await message.answer(f"Связь с поддержкой: {SUPPORT_LINK}")
@@ -136,9 +160,45 @@ async def reply_support(message: types.Message):
 @router.message(F.chat.type == 'private', F.text, ~F.text.startswith('/'))
 async def private_text_handler(message: types.Message):
     # Игнорируем текст кнопок (на случай, если не сработал фильтр)
-    if message.text in ("🛒 Магазин", "➕ Добавить в чат", "❓ Поддержка"):
+    if message.text in ("🛒 Магазин", "➕ Добавить в чат", "💰 Баланс", "❓ Поддержка"):
         return
     await message.answer("🤖 Пропиши /help, чтобы узнать, что я умею.")
+
+# ---------- Обработчик ожидающих действий (после покупки) ----------
+@router.message(F.chat.type == 'private', F.text | F.forward_from_chat)
+async def handle_pending_action(message: types.Message):
+    user_id = message.from_user.id
+    if user_id not in pending_actions:
+        return
+    action_data = pending_actions[user_id]
+    chat_id = await extract_chat_id_from_message(message)
+    if not chat_id:
+        await message.answer(
+            "❌ Не удалось определить чат. Пожалуйста, перешлите сообщение из нужного чата "
+            "(любое сообщение, написанное там) или введите числовой ID чата."
+        )
+        return
+    
+    if action_data['action'] == 'unmute':
+        try:
+            chat_member = await message.bot.get_chat_member(chat_id, user_id)
+            if chat_member.status in ('left', 'kicked'):
+                await message.answer("❌ Вы не являетесь участником этого чата или забанены.")
+                return
+        except Exception as e:
+            await message.answer(f"❌ Бот не может получить информацию о вас в этом чате. Убедитесь, что бот добавлен в чат и у него есть права администратора. Ошибка: {e}")
+            return
+        unmute_user_in_chat(user_id, chat_id, user_id)
+        await message.answer(f"✅ Мут снят в чате с ID `{chat_id}`. Списано {action_data['cost']} Дум.")
+    elif action_data['action'] == 'remove_warn':
+        warns = get_warnings(user_id)
+        if warns:
+            remove_warning(warns[0][0])
+            await message.answer(f"✅ Предупреждение снято. Списано {action_data['cost']} Дум.")
+        else:
+            await message.answer("⚠️ У вас нет предупреждений. Деньги возвращены? (пока нет, надо доработать)")
+            # Здесь можно вернуть деньги, но для простоты пропустим
+    del pending_actions[user_id]
 
 # ---------- Команды, работающие везде ----------
 @router.message(Command("start"))
@@ -157,7 +217,7 @@ async def cmd_help(message: types.Message):
     help_text = (
         "📚 **Доступные команды:**\n\n"
         "💰 `/balance` или `/myduom` – проверить баланс (Думы)\n"
-        "🗑️ `/clear` – очистить историю диалога (только для AI, сейчас не используется)\n"
+        "🗑️ `/clear` – очистить историю диалога (не используется)\n"
         "📊 `/top` – топ активных пользователей\n"
         "🛒 `/shop` – магазин услуг\n"
         "📈 `/stats` – ваша статистика\n"
@@ -568,13 +628,20 @@ async def cmd_statsbot(message: types.Message, bot: Bot):
     if message.chat.type != 'private':
         await message.reply("✅ Статистика отправлена в личку.")
 
-# ---------- Обработчики покупок (callback) ----------
+# ---------- Обработчики покупок (callback) - обновлённые ----------
 @router.callback_query(F.data == "buy_unmute")
 async def buy_unmute(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     cost = 100
     if remove_coins(user_id, cost):
-        await callback.message.answer("⚠️ Эта услуга требует указания чата. Используйте команду `/unmute` после оплаты.")
+        pending_actions[user_id] = {'action': 'unmute', 'cost': cost}
+        await callback.message.answer(
+            "💰 Деньги списаны. Теперь **перешлите любое сообщение из чата**, где нужно снять мут, "
+            "или введите ID чата (число).\n\n"
+            "Как получить ID чата:\n"
+            "1. Добавьте бота @userinfobot в тот чат и напишите ему /id\n"
+            "2. Или перешлите сообщение из чата сюда, бот сам определит."
+        )
     else:
         await callback.message.answer(f"❌ Недостаточно Дум. Нужно {cost}, у вас {get_coins(user_id)}.")
     await callback.answer()
@@ -584,12 +651,11 @@ async def buy_remove_warn(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     cost = 150
     if remove_coins(user_id, cost):
-        warns = get_warnings(user_id)
-        if warns:
-            remove_warning(warns[0][0])
-            await callback.message.answer(f"✅ Предупреждение снято! Списано {cost} Дум.")
-        else:
-            await callback.message.answer("⚠️ У вас нет предупреждений.")
+        pending_actions[user_id] = {'action': 'remove_warn', 'cost': cost}
+        await callback.message.answer(
+            "💰 Деньги списаны. Теперь **перешлите сообщение из чата**, где нужно снять предупреждение, "
+            "или введите ID чата."
+        )
     else:
         await callback.message.answer(f"❌ Недостаточно Дум. Нужно {cost}, у вас {get_coins(user_id)}.")
     await callback.answer()
