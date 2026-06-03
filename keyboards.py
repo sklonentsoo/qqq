@@ -5,6 +5,7 @@ def main_reply_keyboard():
     buttons = [
         [KeyboardButton(text="🛒 Магазин")],
         [KeyboardButton(text="➕ Добавить в чат")],
+        [KeyboardButton(text="💰 Баланс")],
         [KeyboardButton(text="❓ Поддержка")]
     ]
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
